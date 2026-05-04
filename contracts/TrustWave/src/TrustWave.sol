@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 pragma solidity ^0.8.30;
 
-contract TrustWave {
+contract TrustWave is ReentrancyGuard{
 
     error NameLengthCantBeZero();
     error GoalCantBeZero();
@@ -13,8 +14,14 @@ contract TrustWave {
     error AmountToWithdrawCantBeZero();
     error TransferFailed();
     error DonationNotFound();
+    error UserAddressCantBeZero();
+    error DonateLessThenMinValueDonate();
+    error NotOwner();
+    error InsufficientBalance();
+    error InsufficientBalanceOnPool();
 
     event DonationPoolCreated(uint256 indexed poolId, string name, uint256 goalInWei, uint256 timestamp);
+    event MinValueDonateChange(uint256 poolId,uint256 minValueDonate);
     event Donated(uint256 indexed poolId, address indexed donor, string nickname, string message, uint256 amountInWei);
     event Withdrawn(address indexed recipient, uint256 amountInWei);
     event NicknameSet(address indexed user, string nickname);
@@ -33,7 +40,9 @@ contract TrustWave {
         uint256 id;
         string name;
         uint256 goalInWei;
-        uint256 tempAmountInWei;
+        uint256 totalDonated;
+        uint256 raisedInWei;
+        uint256 minValueDonateInWei;
         Donate[] donations;
         bool isActive;
     }
@@ -41,7 +50,6 @@ contract TrustWave {
     struct User {
         string nickname;
         uint256[] createdDonationsPools;
-        uint256 balance;
     }
 
     DonatePool[] private donationsPools;
@@ -53,7 +61,7 @@ contract TrustWave {
         emit NicknameSet(msg.sender, _nickname);
     }
 
-    function addDonationPool(string calldata _name, uint256 _goalInWei) external {
+    function addDonationPool(string calldata _name, uint256 _goalInWei, uint256 _minValueDonateInWei) external {
         if (bytes(_name).length == 0) revert NameLengthCantBeZero();
         if (_goalInWei == 0) revert GoalCantBeZero();
 
@@ -64,7 +72,9 @@ contract TrustWave {
         pool.id = donationsPools.length;
         pool.name = _name;
         pool.goalInWei = _goalInWei;
-        pool.tempAmountInWei = 0;
+        pool.totalDonated = 0;
+        pool.raisedInWei = 0;
+        pool.minValueDonateInWei = _minValueDonateInWei;
         pool.isActive = true;
 
         users[msg.sender].createdDonationsPools.push(pool.id);
@@ -78,6 +88,7 @@ contract TrustWave {
 
         DonatePool storage pool = donationsPools[_poolId - 1];
         if (!pool.isActive) revert DonationPoolIsNotActive();
+        if (msg.value < pool.minValueDonateInWei) revert DonateLessThenMinValueDonate();
 
         User storage donor = users[msg.sender];
 
@@ -90,21 +101,20 @@ contract TrustWave {
         });
 
         pool.donations.push(d);
-        pool.tempAmountInWei += msg.value;
-
-        users[pool.owner].balance += msg.value;
+        pool.totalDonated += msg.value;
+        pool.raisedInWei += msg.value;
 
         emit Donated(_poolId, msg.sender, donor.nickname, _message, msg.value);
     }
 
-    function withdraw(uint256 _amountInWei) external {
+    function withdrawFromPool(uint256 _amountInWei,uint256 _poolId) external nonReentrant{
         if (_amountInWei == 0) revert AmountToWithdrawCantBeZero();
-        User storage user = users[msg.sender];
-        if (user.balance == 0) revert NothingToWithdraw();
-        if (_amountInWei > user.balance) revert AmountToWithdrawCantBeZero();
-        if (_amountInWei > address(this).balance) revert InsufficientBalanceOnContract();
+        if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
+        DonatePool storage pool = donationsPools[_poolId - 1];
+        if (msg.sender != pool.owner) revert NotOwner();
+        if (_amountInWei > pool.raisedInWei) revert InsufficientBalanceOnPool();
 
-        user.balance -= _amountInWei;
+        pool.raisedInWei -= _amountInWei;
 
         (bool success, ) = msg.sender.call{value: _amountInWei}("");
         if (!success) revert TransferFailed();
@@ -115,9 +125,18 @@ contract TrustWave {
     function togglePoolActive(uint256 _poolId, bool _isActive) external {
         if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
         DonatePool storage pool = donationsPools[_poolId - 1];
-        if (msg.sender != pool.owner) revert DonationPoolNotFound();
+        if (msg.sender != pool.owner) revert NotOwner();
         pool.isActive = _isActive;
         emit DonationPoolToggled(_poolId, _isActive);
+    }
+
+    function setMinDonation(uint256 _poolId,uint256 _minAmountDonation) external {
+        if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
+        DonatePool storage pool = donationsPools[_poolId - 1];
+        if (!pool.isActive) revert DonationPoolIsNotActive();
+        if (msg.sender != pool.owner) revert NotOwner();
+        pool.minValueDonateInWei = _minAmountDonation;
+        emit MinValueDonateChange(_poolId,_minAmountDonation);
     }
 
     function getPoolsCount() external view returns (uint256) {
@@ -129,10 +148,11 @@ contract TrustWave {
         uint256 id,
         string memory name,
         uint256 goalInWei,
-        uint256 tempAmountInWei,
+        uint256 totalDonated,
+        uint256 raisedInWei,
+        uint256 minAmountDonation,
         bool isActive,
-        uint256 donationsCount,
-        Donate[] memory donations
+        uint256 donationsCount
     ) {
         if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
         DonatePool storage pool = donationsPools[_poolId - 1];
@@ -141,10 +161,11 @@ contract TrustWave {
             pool.id,
             pool.name,
             pool.goalInWei,
-            pool.tempAmountInWei,
+            pool.totalDonated,
+            pool.raisedInWei,
+            pool.minValueDonateInWei,
             pool.isActive,
-            pool.donations.length,
-            pool.donations
+            pool.donations.length
         );
     }
 
@@ -162,9 +183,10 @@ contract TrustWave {
         return (d.donor, d.nickname, d.message, d.amountDonatedInWei, d.timestamp);
     }
 
-    function getUser(address _user) external view returns (string memory nickname, uint256[] memory createdPoolIds, uint256 balance) {
+    function getUser(address _user) external view returns (string memory nickname, uint256[] memory createdPoolIds) {
+        if (_user == address(0)) revert UserAddressCantBeZero();
         User storage u = users[_user];
-        return (u.nickname, u.createdDonationsPools, u.balance);
+        return (u.nickname, u.createdDonationsPools);
     }
 
 }

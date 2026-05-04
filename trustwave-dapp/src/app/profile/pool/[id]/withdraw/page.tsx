@@ -2,25 +2,39 @@
 
 import { connectWallet } from "@/lib/connectWallet";
 import { getContract } from "@/lib/contract";
-import { ethers } from "ethers";
 import { useState } from "react";
+import { useParams } from "next/navigation";
 
 export default function Withdraw() {
+  const params = useParams();
+  const poolId = Number(params.id); // 👈 берем id пула из URL
+
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
 
   const withdraw = async () => {
-    if (!amount) return alert("Введите сумму для вывода");
+    if (!amount || Number(amount) <= 0)
+      return alert("Введите сумму в WEI");
+
     try {
       setLoading(true);
+
       const { signer } = await connectWallet();
       const contract = getContract(signer);
-      const tx = await contract.withdraw(ethers.parseEther(amount));
+
+      const tx = await contract.withdrawFromPool(
+        BigInt(amount), // 👈 строго WEI
+        poolId
+      );
+
       await tx.wait();
-      alert(" Средства успешно выведены!");
-      window.location.href = "/";
+
+      alert("Средства успешно выведены!");
+
+      window.location.href = `/profile/pool/${poolId}`;
     } catch (err: any) {
-      alert(" Ошибка: " + (err.message || err));
+      console.error(err);
+      alert("Ошибка: " + (err.message || err));
     } finally {
       setLoading(false);
     }
@@ -29,7 +43,9 @@ export default function Withdraw() {
   return (
     <main className="flex flex-col items-center justify-center min-h-screen p-6">
       <div className="w-full max-w-md bg-white rounded-2xl shadow-lg p-6">
-        <h1 className="text-2xl font-bold text-center mb-4">Вывод средств</h1>
+        <h1 className="text-2xl font-bold text-center mb-4">
+          Вывод средств из пула #{poolId}
+        </h1>
 
         <input
           placeholder="Сумма в WEI"
@@ -49,7 +65,7 @@ export default function Withdraw() {
         </button>
 
         <button
-          onClick={() => (window.location.href = "/")}
+          onClick={() => (window.location.href = `/profile/pool/${poolId}`)}
           className="w-full mt-3 text-sm text-gray-600 hover:text-black"
         >
           ← Назад
