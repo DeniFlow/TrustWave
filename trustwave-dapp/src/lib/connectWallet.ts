@@ -1,25 +1,39 @@
 import { ethers } from "ethers";
 
-export const connectWallet = async () => {
-  if (!window.ethereum) throw new Error("MetaMask not found");
+const getEthereum = () => {
+  if (typeof window === "undefined") return null;
+  return (window as any).ethereum;
+};
 
-  const provider = new ethers.BrowserProvider(window.ethereum);
+export const connectWallet = async () => {
+  const ethereum = getEthereum();
+
+  if (!ethereum) throw new Error("MetaMask not found");
+
+  const provider = new ethers.BrowserProvider(ethereum);
 
   await provider.send("eth_requestAccounts", []);
 
   const signer = await provider.getSigner();
   const address = await signer.getAddress();
 
-  localStorage.setItem("tw_address", address);
+  if (typeof window !== "undefined") {
+    localStorage.setItem("tw_address", address);
+  }
 
   return { provider, signer, address };
 };
 
 export const restoreSession = async () => {
-  const saved = localStorage.getItem("tw_address");
-  if (!saved || !window.ethereum) return null;
+  if (typeof window === "undefined") return null;
 
-  const provider = new ethers.BrowserProvider(window.ethereum);
+  const ethereum = getEthereum();
+  if (!ethereum) return null;
+
+  const saved = localStorage.getItem("tw_address");
+  if (!saved) return null;
+
+  const provider = new ethers.BrowserProvider(ethereum);
   const signer = await provider.getSigner();
   const address = await signer.getAddress();
 
@@ -29,5 +43,7 @@ export const restoreSession = async () => {
 };
 
 export const logout = () => {
-  localStorage.removeItem("tw_address");
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("tw_address");
+  }
 };

@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { connectWallet } from "@/lib/connectWallet";
 import { getContract } from "@/lib/contract";
-import { ethers } from "ethers";
 
 export default function OwnerPoolPage() {
   const params = useParams();
+  const router = useRouter();
+
   const id = Number(params.id);
 
+  const [address, setAddress] = useState<string | null>(null);
   const [pool, setPool] = useState<any>(null);
   const [donations, setDonations] = useState<any[]>([]);
   const [shareLink, setShareLink] = useState("");
@@ -17,11 +19,22 @@ export default function OwnerPoolPage() {
   const [newMinDonation, setNewMinDonation] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // ================= LOAD =================
+
   const loadPool = async () => {
     try {
-      const { provider } = await connectWallet();
-      const contract = getContract(provider);
+      const wallet = await connectWallet();
 
+      if (!wallet?.provider || !wallet?.address) {
+        setAddress(null);
+        setPool(null);
+        setDonations([]);
+        return;
+      }
+
+      setAddress(wallet.address);
+
+      const contract = getContract(wallet.provider);
       const p = await contract.getPool(id);
 
       const poolData = {
@@ -37,24 +50,23 @@ export default function OwnerPoolPage() {
       };
 
       setPool(poolData);
+      setShareLink(`${window.location.origin}/pool/${poolData.id}`);
 
-      // загрузка донатов
       const dons = [];
+
       for (let i = 0; i < poolData.donationsCount; i++) {
         const d = await contract.getDonation(id, i);
 
         dons.push({
-          donor: d[0],
           nickname: d[1],
           message: d[2],
           amount: d[3],
-          timestamp: d[4],
         });
       }
 
       setDonations(dons);
-    } catch (err) {
-      console.error("Ошибка при загрузке пула:", err);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -62,13 +74,8 @@ export default function OwnerPoolPage() {
     if (!Number.isNaN(id)) loadPool();
   }, [id]);
 
-  useEffect(() => {
-    if (pool) {
-      setShareLink(`${window.location.origin}/pool/${pool.id}`);
-    }
-  }, [pool]);
+  // ================= ACTIONS =================
 
-  // переключение активности
   const toggleActive = async () => {
     try {
       setLoading(true);
@@ -76,21 +83,20 @@ export default function OwnerPoolPage() {
       const { signer } = await connectWallet();
       const contract = getContract(signer);
 
-      const tx = await contract.togglePoolActive(pool.id, !pool.isActive);
-      await tx.wait();
+      const tx = await contract.togglePoolActive(
+        pool.id,
+        !pool.isActive
+      );
 
+      await tx.wait();
       await loadPool();
-    } catch (e) {
-      console.error(e);
-      alert("Ошибка при смене статуса");
     } finally {
       setLoading(false);
     }
   };
 
-  // смена минимального доната
   const changeMinDonation = async () => {
-    if (!newMinDonation) return alert("Введите сумму в WEI");
+    if (!newMinDonation) return alert("Введите WEI");
 
     try {
       setLoading(true);
@@ -100,135 +106,197 @@ export default function OwnerPoolPage() {
 
       const tx = await contract.setMinDonation(
         pool.id,
-        BigInt(newMinDonation) //  работаем в WEI
+        BigInt(newMinDonation)
       );
 
       await tx.wait();
 
       setNewMinDonation("");
       await loadPool();
-    } catch (e) {
-      console.error(e);
-      alert("Ошибка при изменении минимального доната");
     } finally {
       setLoading(false);
     }
   };
 
-  if (!pool) return <p className="p-6">Загрузка пула...</p>;
+  // ================= GUARD =================
+
+  if (!address) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center">
+        Кошелек не подключен
+      </div>
+    );
+  }
+
+  if (!pool) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center">
+        Загрузка...
+      </div>
+    );
+  }
 
   const percent =
     Number(pool.goal) > 0
-      ? Math.min((Number(pool.totalDonated) / Number(pool.goal)) * 100, 100)
+      ? Math.min(
+          (Number(pool.totalDonated) / Number(pool.goal)) * 100,
+          100
+        )
       : 0;
 
+  // ================= UI =================
+
   return (
-    <main className="p-6 max-w-3xl mx-auto">
-      <h1 className="text-3xl font-bold mb-4">{pool.name}</h1>
+    <div className="min-h-screen bg-[#0a0a0f] text-white px-6 py-8">
 
-      <p><b>Цель:</b> {ethers.formatEther(pool.goal)} ETH</p>
-      <p><b>Собрано всего:</b> {ethers.formatEther(pool.totalDonated)} ETH</p>
-      <p><b>Доступно к выводу:</b> {ethers.formatEther(pool.raised)} ETH</p>
-      <p><b>Минимальный донат:</b> {ethers.formatEther(pool.minDonation)} ETH</p>
+      {/* HEADER */}
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-2xl font-bold">{pool.name}</h1>
 
-      <p>
-        <b>Статус:</b>{" "}
-        {pool.isActive ? (
-          <span className="text-green-600">Активен</span>
-        ) : (
-          <span className="text-red-600">Отключён</span>
-        )}
-      </p>
-
-      {/*  КНОПКИ УПРАВЛЕНИЯ */}
-      <div className="mt-4 flex gap-3">
         <button
-          onClick={toggleActive}
-          disabled={loading}
-          className="bg-yellow-600 text-white px-4 py-2 rounded"
+          onClick={() => router.push("/profile")}
+          className="text-gray-400 hover:text-white"
         >
-          {pool.isActive ? "Отключить пул" : "Активировать пул"}
+          ← Назад
         </button>
       </div>
 
-      {/* 💰 смена минимального доната */}
-      <div className="mt-4 flex gap-2">
+      {/* INFO */}
+      <div className="bg-[#11111a] border border-gray-800 p-6 rounded-xl">
+
+        <p>ID: {pool.id}</p>
+
+        <p>Цель: {pool.goal} WEI</p>
+        <p>Собрано: {pool.totalDonated} WEI</p>
+        <p>Доступно: {pool.raised} WEI</p>
+
+        <p>Мин. донат: {pool.minDonation} WEI</p>
+
+        <p className="mt-2">
+          Статус:{" "}
+          {pool.isActive ? (
+            <span className="text-green-500">Активен</span>
+          ) : (
+            <span className="text-red-500">Отключён</span>
+          )}
+        </p>
+
+        {/* ACTION BUTTONS */}
+        <div className="flex gap-3 mt-4">
+
+          <button
+            onClick={toggleActive}
+            className="bg-yellow-600 px-4 py-2 rounded"
+          >
+            {pool.isActive ? "Отключить" : "Активировать"}
+          </button>
+
+          <button
+            onClick={() =>
+              router.push(`/profile/pool/${pool.id}/withdraw`)
+            }
+            className="bg-green-600 px-4 py-2 rounded"
+          >
+            Вывести
+          </button>
+
+        </div>
+
+      </div>
+
+      {/* MIN DONATION (ВЫШЕ SHARE) */}
+      <div className="mt-6 flex gap-2">
+
         <input
-          type="text"
-          placeholder="Новый минимум (WEI)"
           value={newMinDonation}
           onChange={(e) => setNewMinDonation(e.target.value)}
-          className="border px-3 py-2 rounded w-full"
+          placeholder="Мин. донат (WEI)"
+          className="flex-1 px-3 py-2 bg-black border border-gray-700 rounded"
         />
+
         <button
           onClick={changeMinDonation}
-          disabled={loading}
-          className="bg-indigo-600 text-white px-4 py-2 rounded"
+          className="bg-indigo-600 px-4 py-2 rounded"
         >
           Изменить
         </button>
+
       </div>
 
-      <button
-        onClick={() => (window.location.href = `/profile/pool/${pool.id}/withdraw`)}
-        className="mt-4 bg-green-600 text-white px-4 py-2 rounded"
-      >
-        Вывести средства
-      </button>
+      {/* SHARE */}
+      <div className="mt-6 bg-[#11111a] border border-gray-800 p-4 rounded-xl">
 
-      {/* Progress */}
-      <div className="mt-4">
-        <div className="w-full bg-gray-200 rounded h-3">
+        <p className="text-sm text-gray-400 mb-2">
+          Публичная ссылка
+        </p>
+
+        <div className="flex gap-2">
+
+          <input
+            value={shareLink}
+            readOnly
+            className="flex-1 px-3 py-2 bg-black border border-gray-700 rounded"
+          />
+
+          <button
+            onClick={() =>
+              navigator.clipboard.writeText(shareLink)
+            }
+            className="bg-blue-600 px-4 py-2 rounded"
+          >
+            Копировать
+          </button>
+
+        </div>
+
+      </div>
+
+      {/* PROGRESS */}
+      <div className="mt-6">
+        <div className="w-full bg-gray-800 h-3 rounded">
           <div
             className="bg-green-500 h-3 rounded"
             style={{ width: `${percent}%` }}
           />
         </div>
+
         <p className="text-sm mt-1">{percent.toFixed(2)}%</p>
       </div>
 
-      {/* Share */}
-      {shareLink && (
-        <div className="mt-4 p-3 border rounded bg-gray-50">
-          <p className="font-semibold mb-1">Публичная ссылка:</p>
+      {/* DONATIONS */}
+      <h2 className="text-xl font-bold mt-8 mb-4">
+        Донаты
+      </h2>
 
-          <div className="flex gap-2 items-center">
-            <p className="break-all text-gray-700">{shareLink}</p>
-            <button
-              className="bg-blue-500 text-white px-2 py-1 rounded"
-              onClick={() => {
-                navigator.clipboard.writeText(shareLink);
-                alert("Ссылка скопирована!");
-              }}
+      <div className="space-y-3">
+
+        {donations.length === 0 ? (
+          <p className="text-gray-400">Нет донатов</p>
+        ) : (
+          donations.map((d, i) => (
+            <div
+              key={i}
+              className="bg-[#11111a] border border-gray-800 p-4 rounded-xl"
             >
-              Копировать
-            </button>
-          </div>
-        </div>
-      )}
 
-      {/* Донаты */}
-      <h2 className="text-xl font-semibold mt-6 mb-2">Донаты</h2>
+              <p className="text-purple-300 font-semibold text-lg">
+                {d.nickname || "Аноним"}
+              </p>
 
-      {donations.length === 0 ? (
-        <p>Пока донатов нет.</p>
-      ) : (
-        donations.map((d, i) => (
-          <div key={i} className="border rounded p-3 mb-2 bg-white shadow-sm">
-            <p><b>Адрес:</b> {d.donor}</p>
-            <p><b>Ник:</b> {d.nickname || "—"}</p>
-            <p><b>Сумма:</b> {ethers.formatEther(d.amount)} ETH</p>
-            <p><b>Сообщение:</b> {d.message || "—"}</p>
-          </div>
-        ))
-      )}
+              <p className="text-green-400 font-bold text-lg mt-1">
+                {d.amount} WEI
+              </p>
 
-      <button
-        onClick={() => (window.location.href = "/profile")}
-        className="mt-6 bg-gray-600 text-white px-4 py-2 rounded"
-      >
-        ← Назад в профиль
-      </button>
-    </main>
+              <p className="text-xl mt-3 text-white">
+                {d.message || "—"}
+              </p>
+
+            </div>
+          ))
+        )}
+
+      </div>
+
+    </div>
   );
 }

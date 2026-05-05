@@ -3,34 +3,30 @@
 import { useEffect, useState } from "react";
 import { getContract } from "@/lib/contract";
 import { ethers } from "ethers";
+import { useWallet } from "@/context/WalletContext";
+import { useRouter } from "next/navigation";
+import CreatePoolModal from "../../components/CreatePoolModal";
 
 export default function ProfilePage() {
-  const [address, setAddress] = useState<string>("");
-  const [nickname, setNickname] = useState<string>("");
-  const [newNickname, setNewNickname] = useState<string>("");
+  const router = useRouter();
+  const { address, signer } = useWallet();
+
+  const [nickname, setNickname] = useState("");
+  const [newNickname, setNewNickname] = useState("");
   const [createdPools, setCreatedPools] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [isCreatePoolOpen, setIsCreatePoolOpen] = useState(false);
 
-  //  подключение кошелька
-  const connectWallet = async () => {
-    if (!window.ethereum) throw new Error("MetaMask не установлен");
+  // ================= LOAD =================
 
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    await provider.send("eth_requestAccounts", []);
-
-    const signer = await provider.getSigner();
-    const address = await signer.getAddress();
-
-    return { provider, signer, address };
-  };
-
-  //  загрузка профиля
   const loadProfile = async () => {
-    try {
-      const { provider, address } = await connectWallet();
-      setAddress(address);
+    if (!address || !signer) {
+      setNickname("");
+      setCreatedPools([]);
+      return;
+    }
 
-      const contract = getContract(provider);
+    try {
+      const contract = getContract(signer);
 
       const user = await contract.getUser(address);
       setNickname(user[0]);
@@ -46,134 +42,174 @@ export default function ProfilePage() {
 
       setCreatedPools(pools);
     } catch (e) {
-      console.error("Ошибка загрузки профиля:", e);
-    }
-  };
-
-  //  смена ника
-  const changeNickname = async () => {
-    if (!newNickname.trim()) return;
-
-    try {
-      setLoading(true);
-
-      const { signer } = await connectWallet();
-      const contract = getContract(signer);
-
-      const tx = await contract.setNickname(newNickname);
-      await tx.wait();
-
-      setNewNickname("");
-      await loadProfile();
-    } catch (e) {
       console.error(e);
-      alert("Ошибка смены ника");
-    } finally {
-      setLoading(false);
     }
   };
 
   useEffect(() => {
     loadProfile();
-  }, []);
+  }, [address, signer]);
+
+  // ================= CHANGE NICKNAME (FIXED) =================
+
+  const handleChangeNickname = async () => {
+    if (!newNickname) return alert("Введите ник");
+
+    try {
+      const contract = getContract(signer);
+
+      // ✔️ ВАЖНО: твой контракт использует setNickname
+      const tx = await contract.setNickname(newNickname);
+      await tx.wait();
+
+      setNewNickname("");
+      await loadProfile();
+    } catch (e: any) {
+      console.error(e);
+      alert(e?.message || "Ошибка смены ника");
+    }
+  };
+
+  // ================= CREATE =================
+
+  const handleCreateDonationPool = async (data: any) => {
+    try {
+      const contract = getContract(signer);
+
+      const tx = await contract.addDonationPool(
+        data.name,
+        data.goalInWei,
+        data.minValueDonateInWei
+      );
+
+      await tx.wait();
+
+      await loadProfile();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // ================= UI =================
+
+  if (!address) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0f] text-white flex items-center justify-center">
+        <h2 className="text-xl">Кошелек не подключен</h2>
+      </div>
+    );
+  }
 
   return (
-    <main className="p-6 font-sans max-w-3xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">Профиль</h1>
+    <div className="min-h-screen bg-[#0a0a0f] text-white">
 
-      {!address ? (
-        <p>Подключение...</p>
-      ) : (
-        <>
-          {/*  Инфа о пользователе */}
-          <div className="border p-4 rounded-lg bg-white shadow mb-6">
-            <p><b>Адрес:</b> {address}</p>
-            <p><b>Ник:</b> {nickname || "—"}</p>
+      <div className="max-w-7xl mx-auto px-4 py-10">
 
-            <div className="mt-4 flex gap-2">
-              <input
-                value={newNickname}
-                onChange={(e) => setNewNickname(e.target.value)}
-                placeholder="Новый ник"
-                className="border px-3 py-1 rounded w-full"
-              />
-              <button
-                onClick={changeNickname}
-                className="bg-indigo-600 text-white px-4 rounded"
-              >
-                Сменить
-              </button>
-            </div>
+        {/* TITLE */}
+        <div className="text-center mt-10">
+          <h1 className="text-5xl font-bold mb-3">TrustWave</h1>
+           <p className="text-gray-400">Ваш профиль на платформе</p> </div>
+
+        {/* PROFILE CARD */}
+        <div className="mt-12 max-w-2xl mx-auto bg-[#11111a] border border-gray-800 p-6 rounded-xl">
+
+          <p><b>Адрес:</b> {address}</p>
+          <p className="mb-4"><b>Ник:</b> {nickname || "—"}</p>
+
+          <div className="flex gap-2">
+            <input
+              value={newNickname}
+              onChange={(e) => setNewNickname(e.target.value)}
+              placeholder="Новый ник"
+              className="flex-1 px-3 py-2 rounded bg-black border border-gray-700"
+            />
+
+            <button
+              onClick={handleChangeNickname}
+              className="px-4 py-2 bg-indigo-600 rounded"
+            >
+              Сменить
+            </button>
           </div>
 
-          {/*  Пулы */}
-          <h2 className="text-2xl font-semibold mb-4">Ваши пулы</h2>
+        </div>
+
+        {/* POOLS */}
+        <h2 className="text-2xl font-bold text-center mt-12 mb-6">
+          Ваши пулы
+        </h2>
+
+        <div className="grid gap-4 max-w-3xl mx-auto">
 
           {createdPools.length === 0 ? (
-            <p className="text-gray-500">Нет созданных пулов</p>
+            <p className="text-center text-gray-400">
+              У вас пока нет донатпулов
+            </p>
           ) : (
             createdPools.map((p, i) => (
-              <div key={i} className="border p-4 rounded-lg mb-4 bg-white shadow">
-                <p className="text-xl font-bold">{p[2]}</p>
+              <div
+                key={i}
+                className="bg-[#11111a] border border-gray-800 p-5 rounded-xl"
+              >
+                <p className="text-xl font-bold mb-1">{p[2]}</p>
 
-                <p>ID: {Number(p[1])}</p>
+                <p className="text-gray-400 text-sm">
+                  ID: {Number(p[1])}
+                </p>
 
-                <p>
-                  Цель: {ethers.formatEther(p[3])} ETH
+                {/* ✔️ WEI (как ты хотел) */}
+                <p className="mt-2">
+                  Цель: <b>{p[3].toString()} WEI</b>
                 </p>
 
                 <p>
-                  Собрано: {ethers.formatEther(p[4])} ETH
+                  Собрано: <b>{p[4].toString()} WEI</b>
                 </p>
 
-                <p>
-                   Доступно к выводу:{" "}
-                  <b>{ethers.formatEther(p[5])} ETH</b>
-                </p>
-
-                <p>
-                  Мин. донат: {ethers.formatEther(p[6])} ETH
-                </p>
-
-                <p>
+                <p className="mt-1">
                   Статус:{" "}
                   {p[7] ? (
-                    <span className="text-green-600">Активен</span>
+                    <span className="text-green-500">Активен</span>
                   ) : (
-                    <span className="text-red-600">Отключен</span>
+                    <span className="text-red-500">Отключен</span>
                   )}
                 </p>
 
-                {/*  КНОПКА ПОДРОБНЕЕ */}
                 <button
                   onClick={() =>
-                    (window.location.href = `/profile/pool/${Number(p[1])}`)
+                    router.push(`/profile/pool/${Number(p[1])}`)
                   }
-                  className="mt-3 bg-blue-600 text-white px-4 py-1 rounded"
+                  className="mt-4 px-4 py-2 bg-blue-600 rounded"
                 >
                   Подробнее
                 </button>
+
               </div>
             ))
           )}
 
-          {/* создать пул */}
+        </div>
+
+        {/* CREATE */}
+        <div className="mt-16 text-center">
+
           <button
-            onClick={() => (window.location.href = "/create")}
-            className="bg-green-600 text-white px-4 py-2 rounded-lg"
+            onClick={() => setIsCreatePoolOpen(true)}
+            className="px-8 py-4 bg-gradient-to-r from-green-600 to-emerald-700 rounded-xl font-bold"
           >
-            Создать пул
+            Создать донатпул
           </button>
 
-          {/* назад */}
-          <button
-            onClick={() => (window.location.href = "/")}
-            className="mt-6 bg-gray-800 text-white px-4 py-2 rounded"
-          >
-            Назад
-          </button>
-        </>
-      )}
-    </main>
+        </div>
+
+      </div>
+
+      <CreatePoolModal
+        isOpen={isCreatePoolOpen}
+        onClose={() => setIsCreatePoolOpen(false)}
+        onCreatePool={handleCreateDonationPool}
+      />
+
+    </div>
   );
 }

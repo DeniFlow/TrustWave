@@ -19,6 +19,9 @@ contract TrustWave is ReentrancyGuard{
     error NotOwner();
     error InsufficientBalance();
     error InsufficientBalanceOnPool();
+    error MinValueDonateMoreGoal();
+    error NicknameUnchanged();
+    error FeeRecipientAddressCantBeZero();
 
     event DonationPoolCreated(uint256 indexed poolId, string name, uint256 goalInWei, uint256 timestamp);
     event MinValueDonateChange(uint256 poolId,uint256 minValueDonate);
@@ -54,9 +57,21 @@ contract TrustWave is ReentrancyGuard{
 
     DonatePool[] private donationsPools;
     mapping(address => User) private users;
+    address private feeRecipient;
+    uint256 public constant FEE_PERCENT = 2;
+
+    constructor (address _feeRecipient) {
+        if (_feeRecipient == address(0)) revert FeeRecipientAddressCantBeZero();
+        feeRecipient = _feeRecipient;
+    }
 
 
     function setNickname(string calldata _nickname) external {
+        if (
+            keccak256(bytes(users[msg.sender].nickname)) ==
+            keccak256(bytes(_nickname))
+        ) revert NicknameUnchanged();
+
         users[msg.sender].nickname = _nickname;
         emit NicknameSet(msg.sender, _nickname);
     }
@@ -64,6 +79,7 @@ contract TrustWave is ReentrancyGuard{
     function addDonationPool(string calldata _name, uint256 _goalInWei, uint256 _minValueDonateInWei) external {
         if (bytes(_name).length == 0) revert NameLengthCantBeZero();
         if (_goalInWei == 0) revert GoalCantBeZero();
+        if (_minValueDonateInWei > _goalInWei) revert MinValueDonateMoreGoal();
 
         donationsPools.push();
         DonatePool storage pool = donationsPools[donationsPools.length - 1];
@@ -83,43 +99,56 @@ contract TrustWave is ReentrancyGuard{
     }
 
     function donate(uint256 _poolId, string calldata _message) external payable {
-        if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
-        if (msg.value == 0) revert NothingToDonate();
+    if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
+    if (msg.value == 0) revert NothingToDonate();
 
-        DonatePool storage pool = donationsPools[_poolId - 1];
-        if (!pool.isActive) revert DonationPoolIsNotActive();
-        if (msg.value < pool.minValueDonateInWei) revert DonateLessThenMinValueDonate();
+    DonatePool storage pool = donationsPools[_poolId - 1];
+    if (!pool.isActive) revert DonationPoolIsNotActive();
+    if (msg.value < pool.minValueDonateInWei) revert DonateLessThenMinValueDonate();
 
-        User storage donor = users[msg.sender];
+    uint256 fee = (msg.value * FEE_PERCENT) / 100;
+    uint256 amountAfterFee = msg.value - fee;
 
-        Donate memory d = Donate({
-            donor: msg.sender,
-            nickname: donor.nickname,
-            message: _message,
-            amountDonatedInWei: msg.value,
-            timestamp: block.timestamp
-        });
+    (bool feeOk, ) = feeRecipient.call{value: fee}("");
+    if (!feeOk) revert TransferFailed();
 
-        pool.donations.push(d);
-        pool.totalDonated += msg.value;
-        pool.raisedInWei += msg.value;
+    User storage donor = users[msg.sender];
 
-        emit Donated(_poolId, msg.sender, donor.nickname, _message, msg.value);
-    }
+    Donate memory d = Donate({
+        donor: msg.sender,
+        nickname: donor.nickname,
+        message: _message,
+        amountDonatedInWei: amountAfterFee,
+        timestamp: block.timestamp
+    });
 
-    function withdrawFromPool(uint256 _amountInWei,uint256 _poolId) external nonReentrant{
-        if (_amountInWei == 0) revert AmountToWithdrawCantBeZero();
-        if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
-        DonatePool storage pool = donationsPools[_poolId - 1];
-        if (msg.sender != pool.owner) revert NotOwner();
-        if (_amountInWei > pool.raisedInWei) revert InsufficientBalanceOnPool();
+    pool.donations.push(d);
+    pool.totalDonated += amountAfterFee;
+    pool.raisedInWei += amountAfterFee;
 
-        pool.raisedInWei -= _amountInWei;
+    emit Donated(_poolId, msg.sender, donor.nickname, _message, amountAfterFee);
+}
 
-        (bool success, ) = msg.sender.call{value: _amountInWei}("");
-        if (!success) revert TransferFailed();
+function withdrawFromPool(uint256 _amountInWei, uint256 _poolId) external nonReentrant {
+    if (_amountInWei == 0) revert AmountToWithdrawCantBeZero();
+    if (_poolId == 0 || _poolId > donationsPools.length) revert DonationPoolNotFound();
 
-        emit Withdrawn(msg.sender, _amountInWei);
+    DonatePool storage pool = donationsPools[_poolId - 1];
+    if (msg.sender != pool.owner) revert NotOwner();
+    if (_amountInWei > pool.raisedInWei) revert InsufficientBalanceOnPool();
+
+    uint256 fee = (_amountInWei * FEE_PERCENT) / 100;
+    uint256 amountAfterFee = _amountInWei - fee;
+
+    pool.raisedInWei -= _amountInWei;
+
+    (bool feeOk, ) = feeRecipient.call{value: fee}("");
+    if (!feeOk) revert TransferFailed();
+
+    (bool success, ) = msg.sender.call{value: amountAfterFee}("");
+    if (!success) revert TransferFailed();
+
+    emit Withdrawn(msg.sender, amountAfterFee);
     }
 
     function togglePoolActive(uint256 _poolId, bool _isActive) external {
@@ -135,6 +164,7 @@ contract TrustWave is ReentrancyGuard{
         DonatePool storage pool = donationsPools[_poolId - 1];
         if (!pool.isActive) revert DonationPoolIsNotActive();
         if (msg.sender != pool.owner) revert NotOwner();
+        if (_minAmountDonation > pool.goalInWei) revert MinValueDonateMoreGoal();
         pool.minValueDonateInWei = _minAmountDonation;
         emit MinValueDonateChange(_poolId,_minAmountDonation);
     }
